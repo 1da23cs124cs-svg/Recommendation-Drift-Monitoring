@@ -22,3 +22,5 @@ data/processed/*.csv
 # OS files
 .DS_Store
 Thumbs.db
+# Generated model artifacts
+models/
