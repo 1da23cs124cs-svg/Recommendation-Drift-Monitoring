@@ -120,11 +120,16 @@ def load_data():
         DATA_DIR / "cold_start_summary.csv"
     )
 
+    adaptation = pd.read_csv(
+        DATA_DIR / "adaptation_decision.csv"
+    )
+
     return (
         health,
         relationship,
         recommendation,
         cold_start,
+        adaptation,
     )
 
 
@@ -135,11 +140,15 @@ try:
         relationship_df,
         recommendation_df,
         cold_start_df,
+        adaptation_df,
     ) = load_data()
 
 except FileNotFoundError as error:
 
-    st.error("Required project output is missing.")
+    st.error(
+        "Required project output is missing. "
+        "Run the monitoring and adaptation pipeline first."
+    )
 
     st.code(str(error))
 
@@ -231,6 +240,34 @@ if selected_period != "All":
 
     filtered_health = filtered_health[
         filtered_health["period"] == selected_period
+    ]
+
+
+# ============================================================
+# FILTER ADAPTATION DATA
+# ============================================================
+
+filtered_adaptation = adaptation_df.copy()
+
+
+if selected_model != "All":
+
+    filtered_adaptation = filtered_adaptation[
+        filtered_adaptation["model"] == selected_model
+    ]
+
+
+if selected_task != "All":
+
+    filtered_adaptation = filtered_adaptation[
+        filtered_adaptation["task"] == selected_task
+    ]
+
+
+if selected_period != "All":
+
+    filtered_adaptation = filtered_adaptation[
+        filtered_adaptation["period"] == selected_period
     ]
 
 
@@ -403,7 +440,10 @@ if not performance.empty:
 
     latest_period = max(
         performance["period"],
-        key=lambda value: latest_period_order.get(value, -1),
+        key=lambda value: latest_period_order.get(
+            value,
+            -1,
+        ),
     )
 
     latest_data = performance[
@@ -491,12 +531,10 @@ with perf3:
         ),
     )
 
+
 # ============================================================
 # KEY FINDING
 # ============================================================
-
-# Use the current filters to determine whether a specific
-# degradation finding should be highlighted.
 
 finding_data = health_df.copy()
 
@@ -522,7 +560,6 @@ if selected_period != "All":
     ]
 
 
-# Prefer degraded configurations when generating the finding.
 degraded_findings = finding_data[
     finding_data["health_status"] == "degraded"
 ].copy()
@@ -530,7 +567,6 @@ degraded_findings = finding_data[
 
 if not degraded_findings.empty:
 
-    # Highlight the largest NDCG degradation.
     degraded_findings = degraded_findings.sort_values(
         "ndcg_relative_change_pct"
     )
@@ -579,7 +615,6 @@ if not degraded_findings.empty:
 
 elif not finding_data.empty:
 
-    # If there is no degradation, show a neutral finding.
     st.markdown(
         """
         <div class="finding-card">
@@ -594,6 +629,7 @@ elif not finding_data.empty:
         """,
         unsafe_allow_html=True,
     )
+
 
 # ============================================================
 # PERFORMANCE OVERVIEW
@@ -628,7 +664,6 @@ if not performance.empty:
         ]
     )
 
-
     performance["series"] = (
         performance["model"]
         .astype(str)
@@ -639,7 +674,6 @@ if not performance.empty:
         .str.title()
     )
 
-
     chart1, chart2 = st.columns(2)
 
 
@@ -649,7 +683,9 @@ if not performance.empty:
 
     with chart1:
 
-        st.caption("NDCG@10 — Temporal Performance")
+        st.caption(
+            "NDCG@10 — Temporal Performance"
+        )
 
         ndcg_chart = (
             performance.pivot(
@@ -689,7 +725,9 @@ if not performance.empty:
 
     with chart2:
 
-        st.caption("Recall@10 — Temporal Performance")
+        st.caption(
+            "Recall@10 — Temporal Performance"
+        )
 
         recall_chart = (
             performance.pivot(
@@ -790,6 +828,480 @@ else:
 
 
 # ============================================================
+# ADAPTATION & MODEL LIFECYCLE
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">'
+    'Adaptation & Model Lifecycle'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+if filtered_adaptation.empty:
+
+    st.info(
+        "No adaptation lifecycle information matches "
+        "the current filters."
+    )
+
+else:
+
+    st.caption(
+        "Shows the degradation condition that triggered adaptation "
+        "and the validation results obtained on the unseen recent period."
+    )
+
+    lifecycle_rows = filtered_adaptation.copy()
+
+
+    for start in range(
+        0,
+        len(lifecycle_rows),
+        2,
+    ):
+
+        card_rows = lifecycle_rows.iloc[
+            start:start + 2
+        ]
+
+        card_columns = st.columns(
+            len(card_rows)
+        )
+
+
+        for card_column, (_, row) in zip(
+            card_columns,
+            card_rows.iterrows(),
+        ):
+
+            with card_column:
+
+                model_label = str(
+                    row["model"]
+                ).upper()
+
+                task_label = str(
+                    row["task"]
+                ).title()
+
+                trigger_period = str(
+                    row["period"]
+                ).title()
+
+
+                # ------------------------------------------------
+                # Health status
+                # ------------------------------------------------
+
+                health_status = str(
+                    row["health_status"]
+                ).upper()
+
+                health_icon = {
+                    "HEALTHY": "🟢",
+                    "WARNING": "🟡",
+                    "DEGRADED": "🔴",
+                }.get(
+                    health_status,
+                    "⚪",
+                )
+
+
+                # ------------------------------------------------
+                # Lifecycle decision
+                # ------------------------------------------------
+
+                lifecycle_decision = str(
+                    row["lifecycle_decision"]
+                )
+
+                lifecycle_icon = {
+                    "KEEP_CURRENT_MODEL": "🟢",
+                    "ACCEPT": "🟢",
+                    "REVIEW": "🟡",
+                    "REJECT": "🔴",
+                    "RETRAIN_PENDING": "🟠",
+                }.get(
+                    lifecycle_decision,
+                    "⚪",
+                )
+
+
+                # ------------------------------------------------
+                # Recommended action
+                # ------------------------------------------------
+
+                recommended_action = str(
+                    row["recommended_action"]
+                )
+
+
+                # ------------------------------------------------
+                # Adaptation status
+                # ------------------------------------------------
+
+                adaptation_status = row[
+                    "adaptation_status"
+                ]
+
+                if pd.notna(adaptation_status):
+
+                    adaptation_label = (
+                        str(adaptation_status)
+                        .replace("_", " ")
+                        .title()
+                    )
+
+                else:
+
+                    adaptation_label = (
+                        "Not performed"
+                    )
+
+
+                # ------------------------------------------------
+                # Validation decision
+                # ------------------------------------------------
+
+                validation_decision = row[
+                    "validation_decision"
+                ]
+
+                if pd.notna(validation_decision):
+
+                    validation_label = str(
+                        validation_decision
+                    )
+
+                else:
+
+                    validation_label = (
+                        "Not required"
+                    )
+
+
+                # ------------------------------------------------
+                # Validation period
+                # ------------------------------------------------
+
+                evaluation_period = row.get(
+                    "evaluation_period",
+                    None,
+                )
+
+                if pd.notna(evaluation_period):
+
+                    validation_period_label = {
+                        "baseline_holdout": "Baseline",
+                        "comparison": "Comparison",
+                        "recent": "Recent",
+                    }.get(
+                        str(evaluation_period),
+                        str(evaluation_period).title(),
+                    )
+
+                else:
+
+                    validation_period_label = (
+                        "Not applicable"
+                    )
+
+
+                # ------------------------------------------------
+                # BEFORE / AFTER PERFORMANCE
+                # IMPORTANT:
+                # These values come directly from Phase 4.
+                # ------------------------------------------------
+
+                before_ndcg = row.get(
+                    "before_ndcg_at_10",
+                    float("nan"),
+                )
+
+                after_ndcg = row.get(
+                    "after_ndcg_at_10",
+                    float("nan"),
+                )
+
+                before_recall = row.get(
+                    "before_recall_at_10",
+                    float("nan"),
+                )
+
+                after_recall = row.get(
+                    "after_recall_at_10",
+                    float("nan"),
+                )
+
+
+                ndcg_change = row.get(
+                    "ndcg_relative_change_pct",
+                    float("nan"),
+                )
+
+                recall_change = row.get(
+                    "recall_relative_change_pct",
+                    float("nan"),
+                )
+
+
+                # ------------------------------------------------
+                # Format NDCG
+                # ------------------------------------------------
+
+                if (
+                    pd.notna(before_ndcg)
+                    and pd.notna(after_ndcg)
+                ):
+
+                    ndcg_before_text = (
+                        f"{float(before_ndcg):.6f}"
+                    )
+
+                    ndcg_after_text = (
+                        f"{float(after_ndcg):.6f}"
+                    )
+
+                else:
+
+                    ndcg_before_text = "—"
+                    ndcg_after_text = "—"
+
+
+                if pd.notna(ndcg_change):
+
+                    ndcg_change_text = (
+                        f"{float(ndcg_change):+.2f}%"
+                    )
+
+                else:
+
+                    ndcg_change_text = "—"
+
+
+                # ------------------------------------------------
+                # Format Recall
+                # ------------------------------------------------
+
+                if (
+                    pd.notna(before_recall)
+                    and pd.notna(after_recall)
+                ):
+
+                    recall_before_text = (
+                        f"{float(before_recall):.6f}"
+                    )
+
+                    recall_after_text = (
+                        f"{float(after_recall):.6f}"
+                    )
+
+                else:
+
+                    recall_before_text = "—"
+                    recall_after_text = "—"
+
+
+                if pd.notna(recall_change):
+
+                    recall_change_text = (
+                        f"{float(recall_change):+.2f}%"
+                    )
+
+                else:
+
+                    recall_change_text = "—"
+
+
+                # ------------------------------------------------
+                # Lifecycle card
+                # ------------------------------------------------
+
+                with st.container(
+                    border=True
+                ):
+
+                    st.subheader(
+                        f"{model_label} / "
+                        f"{task_label}"
+                    )
+
+                    st.markdown(
+                        f"### {lifecycle_icon} "
+                        f"{lifecycle_decision}"
+                    )
+
+                    st.markdown(
+                        f"**Health period:** "
+                        f"{trigger_period}"
+                    )
+
+                    st.markdown(
+                        f"**Model Health:** "
+                        f"{health_icon} {health_status}"
+                    )
+
+                    st.markdown(
+                        f"**Recommended Action:** "
+                        f"{recommended_action}"
+                    )
+
+                    st.markdown(
+                        f"**Adaptation:** "
+                        f"{adaptation_label}"
+                    )
+
+                    st.markdown(
+                        f"**Validation:** "
+                        f"{validation_label}"
+                    )
+
+                    st.markdown(
+                        f"**Validation Period:** "
+                        f"{validation_period_label}"
+                    )
+
+                    st.markdown(
+                        "#### Post-Adaptation Validation"
+                    )
+
+                    metric1, metric2 = st.columns(2)
+
+
+                    with metric1:
+
+                        st.metric(
+                            "NDCG@10 Before",
+                            ndcg_before_text,
+                        )
+
+                        st.metric(
+                            "NDCG@10 After",
+                            ndcg_after_text,
+                        )
+
+                        st.caption(
+                            f"Change: {ndcg_change_text}"
+                        )
+
+
+                    with metric2:
+
+                        st.metric(
+                            "Recall@10 Before",
+                            recall_before_text,
+                        )
+
+                        st.metric(
+                            "Recall@10 After",
+                            recall_after_text,
+                        )
+
+                        st.caption(
+                            f"Change: {recall_change_text}"
+                        )
+
+
+                    # ------------------------------------------------
+                    # Validation interpretation
+                    # ------------------------------------------------
+
+                    if lifecycle_decision == "ACCEPT":
+
+                        st.success(
+                            "Adaptation improved the monitored "
+                            "performance dimensions sufficiently "
+                            "to pass validation."
+                        )
+
+                    elif lifecycle_decision == "REVIEW":
+
+                        st.warning(
+                            "Adaptation produced mixed validation "
+                            "results. Manual review is required."
+                        )
+
+                    elif lifecycle_decision == "REJECT":
+
+                        st.error(
+                            "Adaptation did not recover the "
+                            "monitored performance."
+                        )
+
+                    elif lifecycle_decision == "KEEP_CURRENT_MODEL":
+
+                        st.info(
+                            "Current model remains under monitoring; "
+                            "adaptation was not required."
+                        )
+
+                    else:
+
+                        st.info(
+                            "Adaptation is pending validation."
+                        )
+
+
+    # ========================================================
+    # DECISION EXPLANATIONS
+    # ========================================================
+
+    st.markdown(
+        "#### Decision Explanation"
+    )
+
+    explanation_columns = [
+        "period",
+        "task",
+        "model",
+        "recommended_action",
+        "adaptation_status",
+        "validation_decision",
+        "lifecycle_decision",
+        "decision_explanation",
+    ]
+
+    available_explanation_columns = [
+        column
+        for column in explanation_columns
+        if column in filtered_adaptation.columns
+    ]
+
+    explanation_df = filtered_adaptation[
+        available_explanation_columns
+    ].copy()
+
+    explanation_df = explanation_df.rename(
+        columns={
+            "period": "Health Period",
+            "task": "Task",
+            "model": "Model",
+            "recommended_action": "Action",
+            "adaptation_status": "Adaptation",
+            "validation_decision": "Validation",
+            "lifecycle_decision": "Lifecycle Decision",
+            "decision_explanation": "Explanation",
+        }
+    )
+
+    st.dataframe(
+        explanation_df,
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.caption(
+        "ACCEPT indicates that the adaptation passed the "
+        "defined validation rule. REVIEW indicates that the "
+        "adaptation produced mixed results and requires "
+        "manual assessment. REJECT indicates that the "
+        "adaptation did not recover the monitored performance."
+    )
+
+
+# ============================================================
 # COLD-START MONITORING
 # ============================================================
 
@@ -801,21 +1313,87 @@ st.markdown(
 )
 
 
-recent_relationship = relationship_df[
-    relationship_df["period"] == "recent"
-]
+# ------------------------------------------------------------
+# Determine which period to display
+# ------------------------------------------------------------
+
+if selected_period == "All":
+
+    cold_period = "recent"
+
+else:
+
+    cold_period = selected_period
 
 
-if not recent_relationship.empty:
+cold_relationship = relationship_df.copy()
 
-    recent = recent_relationship.iloc[0]
+
+# ------------------------------------------------------------
+# Filter by selected period
+# ------------------------------------------------------------
+
+if "period" in cold_relationship.columns:
+
+    cold_relationship = cold_relationship[
+        cold_relationship["period"] == cold_period
+    ]
+
+
+# ------------------------------------------------------------
+# Filter by selected task
+# ------------------------------------------------------------
+
+if (
+    selected_task != "All"
+    and "task" in cold_relationship.columns
+):
+
+    cold_relationship = cold_relationship[
+        cold_relationship["task"] == selected_task
+    ]
+
+
+# ------------------------------------------------------------
+# Filter by selected model
+# ------------------------------------------------------------
+
+if (
+    selected_model != "All"
+    and "model" in cold_relationship.columns
+):
+
+    cold_relationship = cold_relationship[
+        cold_relationship["model"] == selected_model
+    ]
+
+
+if not cold_relationship.empty:
+
+    cold_values = cold_relationship.iloc[0]
 
     cold_users = float(
-        recent["cold_user_rate_pct"]
+        cold_values["cold_user_rate_pct"]
     )
 
     new_items = float(
-        recent["new_item_rate_pct"]
+        cold_values["new_item_rate_pct"]
+    )
+
+    displayed_cold_period = {
+        "baseline_holdout": "Baseline",
+        "comparison": "Comparison",
+        "recent": "Recent",
+    }.get(
+        cold_period,
+        cold_period.title(),
+    )
+
+
+    st.caption(
+        f"Cold-start indicators for the "
+        f"{displayed_cold_period} evaluation period "
+        f"under the current filters."
     )
 
 
@@ -839,6 +1417,12 @@ if not recent_relationship.empty:
 
             st.caption(
                 "🟡 High cold-user pressure"
+            )
+
+        elif cold_users >= 40:
+
+            st.caption(
+                "🟡 Moderate cold-user pressure"
             )
 
         else:
@@ -888,6 +1472,14 @@ if not recent_relationship.empty:
             "Items not represented in the relevant "
             "training history."
         )
+
+
+else:
+
+    st.info(
+        "No cold-start information matches "
+        "the current filters."
+    )
 
 
 # ============================================================
