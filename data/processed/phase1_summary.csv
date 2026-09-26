@@ -1,0 +1,15 @@
+Metric,Value
+Total interactions,2756101.0
+Unique users,1407580.0
+Unique products,235061.0
+Unique transactions,17672.0
+Duplicate rows removed,460.0
+Event JSD: Baseline vs Comparison,0.00281068962659405
+Event JSD: Baseline vs Recent,0.001893774250869223
+Product JSD: Baseline vs Comparison,0.3927915813427789
+Product JSD: Baseline vs Recent,0.5202878360036652
+User JSD: Baseline vs Comparison,0.7988271597937261
+User JSD: Baseline vs Recent,0.8193017114038538
+Avg interactions/user: Baseline,1.9791862720699844
+Avg interactions/user: Comparison,1.8556820608965992
+Avg interactions/user: Recent,1.7478932584269662

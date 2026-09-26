@@ -14,7 +14,7 @@ __pycache__/
 
 # Large datasets
 data/raw/*.csv
-data/processed/*.csv
+data/processed/events_cleaned.csv
 
 # VS Code
 .vscode/

@@ -1,0 +1,7 @@
+period,task,total_test_users,warm_users,cold_users,total_test_items,known_catalog_items,new_items
+baseline_holdout,engagement,126789,3884,122905,70258,26044,44214
+baseline_holdout,purchase,1079,103,976,1578,1253,325
+comparison,engagement,674192,6005,668187,168229,33236,134993
+comparison,purchase,5414,202,5212,6527,4331,2196
+recent,engagement,173728,1507,172221,82220,24119,58101
+recent,purchase,1290,39,1251,1823,1071,752
