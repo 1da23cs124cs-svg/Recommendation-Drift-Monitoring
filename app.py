@@ -5,1573 +5,501 @@ import streamlit as st
 
 
 # ============================================================
-# CONFIGURATION
+# E-Commerce Recommendation Health Monitor
+# A plain-language dashboard for non-technical users
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 
 st.set_page_config(
-    page_title="Recommendation Health Monitor",
-    page_icon="📊",
+    page_title="Recommendation System Health",
+    page_icon="🛍️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+PERIOD_ORDER = ["baseline_holdout", "comparison", "recent"]
+PERIOD_LABELS = {
+    "baseline_holdout": "Earlier period",
+    "comparison": "Middle period",
+    "recent": "Latest period",
+}
+HEALTH_LABELS = {
+    "healthy": "Healthy",
+    "warning": "Needs attention",
+    "degraded": "Performance has dropped",
+}
+ACTION_LABELS = {
+    "MONITOR": "Keep watching",
+    "RETRAIN": "Recommend retraining",
+}
+LIFECYCLE_LABELS = {
+    "KEEP_CURRENT_MODEL": "Keep current model",
+    "ACCEPT": "Adapted model passed checks",
+    "REVIEW": "Needs human review",
+    "REJECT": "Adapted model did not pass",
+    "RETRAIN_PENDING": "Retraining pending",
+}
 
-# ============================================================
-# CUSTOM STYLING
-# ============================================================
+
+# ------------------------------ Styling ------------------------------
 
 st.markdown(
     """
     <style>
-
-    .main-title {
-        font-size: 2.3rem;
-        font-weight: 700;
-        margin-bottom: 0.15rem;
+    .block-container {padding-top: 1.7rem; padding-bottom: 2.5rem;}
+    .main-title {font-size: 2.1rem; font-weight: 750; margin-bottom: .15rem;}
+    .subtitle {font-size: 1rem; color: #667085; margin-bottom: 1.25rem;}
+    .plain-card {
+        border: 1px solid rgba(128,128,128,.25);
+        border-radius: 14px; padding: 1rem 1.1rem;
+        background: rgba(128,128,128,.045); min-height: 112px;
     }
-
-    .subtitle {
-        color: #6b7280;
-        font-size: 1rem;
-        margin-bottom: 1.5rem;
-    }
-
-    .section-title {
-        font-size: 1.35rem;
-        font-weight: 650;
-        margin-top: 1.25rem;
-        margin-bottom: 0.8rem;
-    }
-
-    .status-card {
-        padding: 1rem 1.1rem;
-        border-radius: 12px;
-        border: 1px solid rgba(128, 128, 128, 0.20);
-        background: rgba(128, 128, 128, 0.05);
-        min-height: 112px;
-    }
-
-    .status-label {
-        font-size: 0.82rem;
-        color: #6b7280;
-        margin-bottom: 0.3rem;
-    }
-
-    .status-value {
-        font-size: 1.5rem;
-        font-weight: 650;
-    }
-
-    .finding-card {
-        padding: 1rem 1.2rem;
-        border-radius: 10px;
-        border: 1px solid rgba(128, 128, 128, 0.18);
-        background: rgba(128, 128, 128, 0.04);
-        margin-top: 0.5rem;
-        margin-bottom: 1rem;
-    }
-
-    .finding-title {
-        font-size: 0.95rem;
-        font-weight: 650;
-        margin-bottom: 0.35rem;
-    }
-
-    .finding-text {
-        font-size: 0.9rem;
-        color: #4b5563;
-        line-height: 1.5;
-    }
-
-    .small-text {
-        color: #6b7280;
-        font-size: 0.85rem;
-    }
-
+    .card-label {font-size: .88rem; color: #667085; margin-bottom: .4rem;}
+    .card-value {font-size: 1.45rem; font-weight: 750;}
+    .helper {color: #667085; font-size: .88rem;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-# ============================================================
-# DATA LOADING
-# ============================================================
+# ------------------------------ Data loading ------------------------------
 
 @st.cache_data
 def load_data():
+    required = {
+        "health": DATA_DIR / "model_health_status.csv",
+        "relationship": DATA_DIR / "drift_performance_relationship.csv",
+        "recommendation": DATA_DIR / "recommendation_results.csv",
+        "cold_start": DATA_DIR / "cold_start_summary.csv",
+        "adaptation": DATA_DIR / "adaptation_decision.csv",
+    }
 
-    health = pd.read_csv(
-        DATA_DIR / "model_health_status.csv"
-    )
+    missing = [str(path) for path in required.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError("\n".join(missing))
 
-    relationship = pd.read_csv(
-        DATA_DIR / "drift_performance_relationship.csv"
-    )
+    frames = {name: pd.read_csv(path) for name, path in required.items()}
 
-    recommendation = pd.read_csv(
-        DATA_DIR / "recommendation_results.csv"
-    )
+    for name, frame in frames.items():
+        for col in ("period", "task", "model", "health_status",
+                    "recommended_action", "lifecycle_decision",
+                    "adaptation_status", "validation_decision"):
+            if col in frame.columns:
+                frame[col] = frame[col].astype("string").str.strip()
 
-    cold_start = pd.read_csv(
-        DATA_DIR / "cold_start_summary.csv"
-    )
-
-    adaptation = pd.read_csv(
-        DATA_DIR / "adaptation_decision.csv"
-    )
-
-    return (
-        health,
-        relationship,
-        recommendation,
-        cold_start,
-        adaptation,
-    )
+    return frames
 
 
 try:
-
-    (
-        health_df,
-        relationship_df,
-        recommendation_df,
-        cold_start_df,
-        adaptation_df,
-    ) = load_data()
-
-except FileNotFoundError as error:
-
-    st.error(
-        "Required project output is missing. "
-        "Run the monitoring and adaptation pipeline first."
-    )
-
-    st.code(str(error))
-
+    data = load_data()
+except (FileNotFoundError, pd.errors.EmptyDataError) as exc:
+    st.error("Some project result files are missing or empty.")
+    st.write("Run your monitoring and adaptation scripts first, then refresh this page.")
+    st.code(str(exc))
     st.stop()
 
+health_df = data["health"]
+relationship_df = data["relationship"]
+recommendation_df = data["recommendation"]
+cold_start_df = data["cold_start"]
+adaptation_df = data["adaptation"]
 
-# ============================================================
-# HEADER
-# ============================================================
 
+# ------------------------------ Header ------------------------------
+
+st.markdown('<div class="main-title">🛍️ Recommendation System Health</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="main-title">'
-    'E-Commerce Recommendation Health Monitor'
-    '</div>',
+    '<div class="subtitle">A simple overview of whether the shop’s recommendations are '
+    'working well, changing over time, or need attention.</div>',
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    '<div class="subtitle">'
-    'Monitor data drift, recommendation performance, '
-    'cold-start pressure, and model health'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.title("Monitoring Controls")
-
-st.sidebar.caption(
-    "Use these filters to investigate model behaviour."
-)
-
-
-available_models = sorted(
-    health_df["model"].unique()
-)
-
-available_tasks = sorted(
-    health_df["task"].unique()
-)
-
-available_periods = sorted(
-    health_df["period"].unique()
-)
-
-
-selected_model = st.sidebar.selectbox(
-    "Model",
-    ["All"] + available_models,
-)
-
-selected_task = st.sidebar.selectbox(
-    "Task",
-    ["All"] + available_tasks,
-)
-
-selected_period = st.sidebar.selectbox(
-    "Evaluation Period",
-    ["All"] + available_periods,
-)
-
-
-# ============================================================
-# FILTER HEALTH DATA
-# ============================================================
-
-filtered_health = health_df.copy()
-
-
-if selected_model != "All":
-
-    filtered_health = filtered_health[
-        filtered_health["model"] == selected_model
-    ]
-
-
-if selected_task != "All":
-
-    filtered_health = filtered_health[
-        filtered_health["task"] == selected_task
-    ]
-
-
-if selected_period != "All":
-
-    filtered_health = filtered_health[
-        filtered_health["period"] == selected_period
-    ]
-
-
-# ============================================================
-# FILTER ADAPTATION DATA
-# ============================================================
-
-filtered_adaptation = adaptation_df.copy()
-
-
-if selected_model != "All":
-
-    filtered_adaptation = filtered_adaptation[
-        filtered_adaptation["model"] == selected_model
-    ]
-
-
-if selected_task != "All":
-
-    filtered_adaptation = filtered_adaptation[
-        filtered_adaptation["task"] == selected_task
-    ]
-
-
-if selected_period != "All":
-
-    filtered_adaptation = filtered_adaptation[
-        filtered_adaptation["period"] == selected_period
-    ]
-
-
-# ============================================================
-# SYSTEM OVERVIEW
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">System Overview</div>',
-    unsafe_allow_html=True,
-)
-
-
-degraded_count = int(
-    filtered_health["health_status"]
-    .eq("degraded")
-    .sum()
-)
-
-warning_count = int(
-    filtered_health["health_status"]
-    .eq("warning")
-    .sum()
-)
-
-healthy_count = int(
-    filtered_health["health_status"]
-    .eq("healthy")
-    .sum()
-)
-
-
-if degraded_count > 0:
-
-    overall_status = "DEGRADED"
-    status_icon = "🔴"
-
-elif warning_count > 0:
-
-    overall_status = "WARNING"
-    status_icon = "🟡"
-
-else:
-
-    overall_status = "HEALTHY"
-    status_icon = "🟢"
-
-
-col1, col2, col3, col4 = st.columns(4)
-
-
-with col1:
-
-    st.markdown(
-        f"""
-        <div class="status-card">
-            <div class="status-label">Overall Model Health</div>
-            <div class="status-value">
-                {status_icon} {overall_status}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+with st.expander("What does this dashboard do?", expanded=False):
+    st.write(
+        "An online shop recommends products to visitors. This dashboard checks whether those "
+        "recommendations remain useful over time, whether the data is changing, and whether a "
+        "model that was retrained performs better on a later test period."
     )
-
-
-with col2:
-
-    st.markdown(
-        f"""
-        <div class="status-card">
-            <div class="status-label">Healthy Models</div>
-            <div class="status-value">
-                🟢 {healthy_count}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-with col3:
-
-    st.markdown(
-        f"""
-        <div class="status-card">
-            <div class="status-label">Warnings</div>
-            <div class="status-value">
-                🟡 {warning_count}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-with col4:
-
-    st.markdown(
-        f"""
-        <div class="status-card">
-            <div class="status-label">Degraded</div>
-            <div class="status-value">
-                🔴 {degraded_count}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# PERFORMANCE DATA
-# ============================================================
-
-performance = recommendation_df[
-    recommendation_df["k"] == 10
-].copy()
-
-
-if selected_model != "All":
-
-    performance = performance[
-        performance["model"] == selected_model
-    ]
-
-
-if selected_task != "All":
-
-    performance = performance[
-        performance["task"] == selected_task
-    ]
-
-
-performance = performance[
-    performance["period"].isin(
-        [
-            "baseline_holdout",
-            "comparison",
-            "recent",
-        ]
-    )
-]
-
-
-if selected_period != "All":
-
-    performance = performance[
-        performance["period"] == selected_period
-    ]
-
-
-# ============================================================
-# CURRENT PERFORMANCE
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Current Performance</div>',
-    unsafe_allow_html=True,
-)
-
-
-if not performance.empty:
-
-    latest_period_order = {
-        "baseline_holdout": 0,
-        "comparison": 1,
-        "recent": 2,
-    }
-
-    latest_period = max(
-        performance["period"],
-        key=lambda value: latest_period_order.get(
-            value,
-            -1,
-        ),
-    )
-
-    latest_data = performance[
-        performance["period"] == latest_period
-    ].copy()
-
-    latest_ndcg = float(
-        latest_data["ndcg_at_k"].mean()
-    )
-
-    latest_recall = float(
-        latest_data["recall_at_k"].mean()
-    )
-
-    period_label = {
-        "baseline_holdout": "Baseline",
-        "comparison": "Comparison",
-        "recent": "Recent",
-    }.get(
-        latest_period,
-        latest_period.title(),
-    )
-
-else:
-
-    latest_period = None
-    latest_ndcg = None
-    latest_recall = None
-    period_label = None
-
-
-perf1, perf2, perf3 = st.columns(3)
-
-
-with perf1:
-
-    if latest_ndcg is not None:
-
-        st.metric(
-            f"NDCG@10 • {period_label}",
-            f"{latest_ndcg:.4f}",
-            help=(
-                "Mean NDCG@10 across the configurations "
-                "selected by the current filters."
-            ),
-        )
-
-    else:
-
-        st.metric(
-            "NDCG@10",
-            "—",
-        )
-
-
-with perf2:
-
-    if latest_recall is not None:
-
-        st.metric(
-            f"Recall@10 • {period_label}",
-            f"{latest_recall:.4f}",
-            help=(
-                "Mean Recall@10 across the configurations "
-                "selected by the current filters."
-            ),
-        )
-
-    else:
-
-        st.metric(
-            "Recall@10",
-            "—",
-        )
-
-
-with perf3:
-
-    st.metric(
-        "Monitoring Threshold",
-        "20%",
-        help=(
-            "Relative NDCG or Recall degradation threshold "
-            "used by the monitoring policy."
-        ),
-    )
-
-
-# ============================================================
-# KEY FINDING
-# ============================================================
-
-finding_data = health_df.copy()
-
-
-if selected_model != "All":
-
-    finding_data = finding_data[
-        finding_data["model"] == selected_model
-    ]
-
-
-if selected_task != "All":
-
-    finding_data = finding_data[
-        finding_data["task"] == selected_task
-    ]
-
-
-if selected_period != "All":
-
-    finding_data = finding_data[
-        finding_data["period"] == selected_period
-    ]
-
-
-degraded_findings = finding_data[
-    finding_data["health_status"] == "degraded"
-].copy()
-
-
-if not degraded_findings.empty:
-
-    degraded_findings = degraded_findings.sort_values(
-        "ndcg_relative_change_pct"
-    )
-
-    key_row = degraded_findings.iloc[0]
-
-    key_model = str(
-        key_row["model"]
-    ).upper()
-
-    key_task = str(
-        key_row["task"]
-    ).title()
-
-    key_period = str(
-        key_row["period"]
-    ).title()
-
-    key_ndcg = float(
-        key_row["ndcg_relative_change_pct"]
-    )
-
-    key_recall = float(
-        key_row["recall_relative_change_pct"]
-    )
-
-    st.markdown(
-        f"""
-        <div class="finding-card">
-            <div class="finding-title">
-                🔎 Key Monitoring Finding
-            </div>
-            <div class="finding-text">
-                <strong>{key_model} / {key_task} / {key_period}</strong>
-                shows the strongest monitored degradation under the
-                current filters: NDCG@10 changed by
-                <strong>{key_ndcg:+.2f}%</strong> and Recall@10 changed by
-                <strong>{key_recall:+.2f}%</strong> relative to the
-                baseline holdout.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-elif not finding_data.empty:
-
-    st.markdown(
-        """
-        <div class="finding-card">
-            <div class="finding-title">
-                🔎 Key Monitoring Finding
-            </div>
-            <div class="finding-text">
-                No configuration under the current filters crosses
-                the 20% NDCG degradation threshold.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# PERFORMANCE OVERVIEW
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">'
-    'Recommendation Performance'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-if not performance.empty:
-
-    performance["period_order"] = (
-        performance["period"]
-        .map(
-            {
-                "baseline_holdout": 0,
-                "comparison": 1,
-                "recent": 2,
-            }
-        )
-    )
-
-    performance = performance.sort_values(
-        [
-            "model",
-            "task",
-            "period_order",
-        ]
-    )
-
-    performance["series"] = (
-        performance["model"]
-        .astype(str)
-        .str.title()
-        + " - "
-        + performance["task"]
-        .astype(str)
-        .str.title()
-    )
-
-    chart1, chart2 = st.columns(2)
-
-
-    # ========================================================
-    # NDCG@10
-    # ========================================================
-
-    with chart1:
-
-        st.caption(
-            "NDCG@10 — Temporal Performance"
-        )
-
-        ndcg_chart = (
-            performance.pivot(
-                index="period",
-                columns="series",
-                values="ndcg_at_k",
-            )
-            .reindex(
-                [
-                    "baseline_holdout",
-                    "comparison",
-                    "recent",
-                ]
-            )
-        )
-
-        ndcg_chart.index = [
-            "Baseline",
-            "Comparison",
-            "Recent",
-        ]
-
-        ndcg_chart.columns = [
-            str(column)
-            for column in ndcg_chart.columns
-        ]
-
-        st.line_chart(
-            ndcg_chart,
-            width="stretch",
-        )
-
-
-    # ========================================================
-    # RECALL@10
-    # ========================================================
-
-    with chart2:
-
-        st.caption(
-            "Recall@10 — Temporal Performance"
-        )
-
-        recall_chart = (
-            performance.pivot(
-                index="period",
-                columns="series",
-                values="recall_at_k",
-            )
-            .reindex(
-                [
-                    "baseline_holdout",
-                    "comparison",
-                    "recent",
-                ]
-            )
-        )
-
-        recall_chart.index = [
-            "Baseline",
-            "Comparison",
-            "Recent",
-        ]
-
-        recall_chart.columns = [
-            str(column)
-            for column in recall_chart.columns
-        ]
-
-        st.line_chart(
-            recall_chart,
-            width="stretch",
-        )
-
-
-else:
-
-    st.info(
-        "No recommendation performance data matches "
-        "the current filters."
-    )
-
-
-# ============================================================
-# DEGRADATION ALERTS
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">'
-    'Model Degradation Alerts'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-degraded_rows = filtered_health[
-    filtered_health["health_status"] == "degraded"
-].copy()
-
-
-warning_rows = filtered_health[
-    filtered_health["health_status"] == "warning"
-].copy()
-
-
-if degraded_rows.empty and warning_rows.empty:
-
-    st.success(
-        "No model degradation alerts under the current filters."
-    )
-
-else:
-
-    for _, row in degraded_rows.iterrows():
-
-        ndcg = float(
-            row["ndcg_relative_change_pct"]
-        )
-
-        st.error(
-            f"🔴 {row['model'].upper()} / "
-            f"{row['task'].title()} / "
-            f"{row['period'].title()} — "
-            f"NDCG@10 changed by {ndcg:+.2f}%"
-        )
-
-
-    for _, row in warning_rows.iterrows():
-
-        recall = float(
-            row["recall_relative_change_pct"]
-        )
-
-        st.warning(
-            f"🟡 {row['model'].upper()} / "
-            f"{row['task'].title()} / "
-            f"{row['period'].title()} — "
-            f"Recall@10 changed by {recall:+.2f}%"
-        )
-
-
-# ============================================================
-# ADAPTATION & MODEL LIFECYCLE
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">'
-    'Adaptation & Model Lifecycle'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-if filtered_adaptation.empty:
-
-    st.info(
-        "No adaptation lifecycle information matches "
-        "the current filters."
-    )
-
-else:
-
     st.caption(
-        "Shows the degradation condition that triggered adaptation "
-        "and the validation results obtained on the unseen recent period."
-    )
-
-    lifecycle_rows = filtered_adaptation.copy()
-
-
-    for start in range(
-        0,
-        len(lifecycle_rows),
-        2,
-    ):
-
-        card_rows = lifecycle_rows.iloc[
-            start:start + 2
-        ]
-
-        card_columns = st.columns(
-            len(card_rows)
-        )
-
-
-        for card_column, (_, row) in zip(
-            card_columns,
-            card_rows.iterrows(),
-        ):
-
-            with card_column:
-
-                model_label = str(
-                    row["model"]
-                ).upper()
-
-                task_label = str(
-                    row["task"]
-                ).title()
-
-                trigger_period = str(
-                    row["period"]
-                ).title()
-
-
-                # ------------------------------------------------
-                # Health status
-                # ------------------------------------------------
-
-                health_status = str(
-                    row["health_status"]
-                ).upper()
-
-                health_icon = {
-                    "HEALTHY": "🟢",
-                    "WARNING": "🟡",
-                    "DEGRADED": "🔴",
-                }.get(
-                    health_status,
-                    "⚪",
-                )
-
-
-                # ------------------------------------------------
-                # Lifecycle decision
-                # ------------------------------------------------
-
-                lifecycle_decision = str(
-                    row["lifecycle_decision"]
-                )
-
-                lifecycle_icon = {
-                    "KEEP_CURRENT_MODEL": "🟢",
-                    "ACCEPT": "🟢",
-                    "REVIEW": "🟡",
-                    "REJECT": "🔴",
-                    "RETRAIN_PENDING": "🟠",
-                }.get(
-                    lifecycle_decision,
-                    "⚪",
-                )
-
-
-                # ------------------------------------------------
-                # Recommended action
-                # ------------------------------------------------
-
-                recommended_action = str(
-                    row["recommended_action"]
-                )
-
-
-                # ------------------------------------------------
-                # Adaptation status
-                # ------------------------------------------------
-
-                adaptation_status = row[
-                    "adaptation_status"
-                ]
-
-                if pd.notna(adaptation_status):
-
-                    adaptation_label = (
-                        str(adaptation_status)
-                        .replace("_", " ")
-                        .title()
-                    )
-
-                else:
-
-                    adaptation_label = (
-                        "Not performed"
-                    )
-
-
-                # ------------------------------------------------
-                # Validation decision
-                # ------------------------------------------------
-
-                validation_decision = row[
-                    "validation_decision"
-                ]
-
-                if pd.notna(validation_decision):
-
-                    validation_label = str(
-                        validation_decision
-                    )
-
-                else:
-
-                    validation_label = (
-                        "Not required"
-                    )
-
-
-                # ------------------------------------------------
-                # Validation period
-                # ------------------------------------------------
-
-                evaluation_period = row.get(
-                    "evaluation_period",
-                    None,
-                )
-
-                if pd.notna(evaluation_period):
-
-                    validation_period_label = {
-                        "baseline_holdout": "Baseline",
-                        "comparison": "Comparison",
-                        "recent": "Recent",
-                    }.get(
-                        str(evaluation_period),
-                        str(evaluation_period).title(),
-                    )
-
-                else:
-
-                    validation_period_label = (
-                        "Not applicable"
-                    )
-
-
-                # ------------------------------------------------
-                # BEFORE / AFTER PERFORMANCE
-                # IMPORTANT:
-                # These values come directly from Phase 4.
-                # ------------------------------------------------
-
-                before_ndcg = row.get(
-                    "before_ndcg_at_10",
-                    float("nan"),
-                )
-
-                after_ndcg = row.get(
-                    "after_ndcg_at_10",
-                    float("nan"),
-                )
-
-                before_recall = row.get(
-                    "before_recall_at_10",
-                    float("nan"),
-                )
-
-                after_recall = row.get(
-                    "after_recall_at_10",
-                    float("nan"),
-                )
-
-
-                ndcg_change = row.get(
-                    "ndcg_relative_change_pct",
-                    float("nan"),
-                )
-
-                recall_change = row.get(
-                    "recall_relative_change_pct",
-                    float("nan"),
-                )
-
-
-                # ------------------------------------------------
-                # Format NDCG
-                # ------------------------------------------------
-
-                if (
-                    pd.notna(before_ndcg)
-                    and pd.notna(after_ndcg)
-                ):
-
-                    ndcg_before_text = (
-                        f"{float(before_ndcg):.6f}"
-                    )
-
-                    ndcg_after_text = (
-                        f"{float(after_ndcg):.6f}"
-                    )
-
-                else:
-
-                    ndcg_before_text = "—"
-                    ndcg_after_text = "—"
-
-
-                if pd.notna(ndcg_change):
-
-                    ndcg_change_text = (
-                        f"{float(ndcg_change):+.2f}%"
-                    )
-
-                else:
-
-                    ndcg_change_text = "—"
-
-
-                # ------------------------------------------------
-                # Format Recall
-                # ------------------------------------------------
-
-                if (
-                    pd.notna(before_recall)
-                    and pd.notna(after_recall)
-                ):
-
-                    recall_before_text = (
-                        f"{float(before_recall):.6f}"
-                    )
-
-                    recall_after_text = (
-                        f"{float(after_recall):.6f}"
-                    )
-
-                else:
-
-                    recall_before_text = "—"
-                    recall_after_text = "—"
-
-
-                if pd.notna(recall_change):
-
-                    recall_change_text = (
-                        f"{float(recall_change):+.2f}%"
-                    )
-
-                else:
-
-                    recall_change_text = "—"
-
-
-                # ------------------------------------------------
-                # Lifecycle card
-                # ------------------------------------------------
-
-                with st.container(
-                    border=True
-                ):
-
-                    st.subheader(
-                        f"{model_label} / "
-                        f"{task_label}"
-                    )
-
-                    st.markdown(
-                        f"### {lifecycle_icon} "
-                        f"{lifecycle_decision}"
-                    )
-
-                    st.markdown(
-                        f"**Health period:** "
-                        f"{trigger_period}"
-                    )
-
-                    st.markdown(
-                        f"**Model Health:** "
-                        f"{health_icon} {health_status}"
-                    )
-
-                    st.markdown(
-                        f"**Recommended Action:** "
-                        f"{recommended_action}"
-                    )
-
-                    st.markdown(
-                        f"**Adaptation:** "
-                        f"{adaptation_label}"
-                    )
-
-                    st.markdown(
-                        f"**Validation:** "
-                        f"{validation_label}"
-                    )
-
-                    st.markdown(
-                        f"**Validation Period:** "
-                        f"{validation_period_label}"
-                    )
-
-                    st.markdown(
-                        "#### Post-Adaptation Validation"
-                    )
-
-                    metric1, metric2 = st.columns(2)
-
-
-                    with metric1:
-
-                        st.metric(
-                            "NDCG@10 Before",
-                            ndcg_before_text,
-                        )
-
-                        st.metric(
-                            "NDCG@10 After",
-                            ndcg_after_text,
-                        )
-
-                        st.caption(
-                            f"Change: {ndcg_change_text}"
-                        )
-
-
-                    with metric2:
-
-                        st.metric(
-                            "Recall@10 Before",
-                            recall_before_text,
-                        )
-
-                        st.metric(
-                            "Recall@10 After",
-                            recall_after_text,
-                        )
-
-                        st.caption(
-                            f"Change: {recall_change_text}"
-                        )
-
-
-                    # ------------------------------------------------
-                    # Validation interpretation
-                    # ------------------------------------------------
-
-                    if lifecycle_decision == "ACCEPT":
-
-                        st.success(
-                            "Adaptation improved the monitored "
-                            "performance dimensions sufficiently "
-                            "to pass validation."
-                        )
-
-                    elif lifecycle_decision == "REVIEW":
-
-                        st.warning(
-                            "Adaptation produced mixed validation "
-                            "results. Manual review is required."
-                        )
-
-                    elif lifecycle_decision == "REJECT":
-
-                        st.error(
-                            "Adaptation did not recover the "
-                            "monitored performance."
-                        )
-
-                    elif lifecycle_decision == "KEEP_CURRENT_MODEL":
-
-                        st.info(
-                            "Current model remains under monitoring; "
-                            "adaptation was not required."
-                        )
-
-                    else:
-
-                        st.info(
-                            "Adaptation is pending validation."
-                        )
-
-
-    # ========================================================
-    # DECISION EXPLANATIONS
-    # ========================================================
-
-    st.markdown(
-        "#### Decision Explanation"
-    )
-
-    explanation_columns = [
-        "period",
-        "task",
-        "model",
-        "recommended_action",
-        "adaptation_status",
-        "validation_decision",
-        "lifecycle_decision",
-        "decision_explanation",
-    ]
-
-    available_explanation_columns = [
-        column
-        for column in explanation_columns
-        if column in filtered_adaptation.columns
-    ]
-
-    explanation_df = filtered_adaptation[
-        available_explanation_columns
-    ].copy()
-
-    explanation_df = explanation_df.rename(
-        columns={
-            "period": "Health Period",
-            "task": "Task",
-            "model": "Model",
-            "recommended_action": "Action",
-            "adaptation_status": "Adaptation",
-            "validation_decision": "Validation",
-            "lifecycle_decision": "Lifecycle Decision",
-            "decision_explanation": "Explanation",
-        }
-    )
-
-    st.dataframe(
-        explanation_df,
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.caption(
-        "ACCEPT indicates that the adaptation passed the "
-        "defined validation rule. REVIEW indicates that the "
-        "adaptation produced mixed results and requires "
-        "manual assessment. REJECT indicates that the "
-        "adaptation did not recover the monitored performance."
+        "Important: a change happening at the same time as a performance drop does not, by itself, "
+        "prove that the data change caused the drop."
     )
 
 
-# ============================================================
-# COLD-START MONITORING
-# ============================================================
+# ------------------------------ Sidebar filters ------------------------------
 
-st.markdown(
-    '<div class="section-title">'
-    'Cold-Start Monitoring'
-    '</div>',
-    unsafe_allow_html=True,
+st.sidebar.title("Choose what to view")
+st.sidebar.caption("These filters update the numbers, charts, alerts, and tables.")
+
+models = sorted(health_df["model"].dropna().astype(str).unique()) if "model" in health_df else []
+tasks = sorted(health_df["task"].dropna().astype(str).unique()) if "task" in health_df else []
+periods_available = [p for p in PERIOD_ORDER if p in set(health_df.get("period", pd.Series(dtype=str)).dropna())]
+
+selected_model = st.sidebar.selectbox("Recommendation method", ["All methods"] + models)
+selected_task = st.sidebar.selectbox("What is being measured?", ["All tasks"] + tasks)
+selected_period_label = st.sidebar.selectbox(
+    "Time period",
+    ["All periods"] + [PERIOD_LABELS.get(p, p.title()) for p in periods_available],
 )
+selected_period = next(
+    (p for p, label in PERIOD_LABELS.items() if label == selected_period_label),
+    None,
+) if selected_period_label != "All periods" else None
+
+def apply_filters(frame, period_column=True):
+    result = frame.copy()
+    if selected_model != "All methods" and "model" in result.columns:
+        result = result[result["model"].astype(str) == selected_model]
+    if selected_task != "All tasks" and "task" in result.columns:
+        result = result[result["task"].astype(str) == selected_task]
+    if selected_period and period_column and "period" in result.columns:
+        result = result[result["period"].astype(str) == selected_period]
+    return result
+
+filtered_health = apply_filters(health_df)
+filtered_adaptation = apply_filters(adaptation_df)
+filtered_performance = recommendation_df.copy()
+if "k" in filtered_performance.columns:
+    filtered_performance = filtered_performance[filtered_performance["k"] == 10]
+filtered_performance = apply_filters(filtered_performance)
+if "period" in filtered_performance.columns:
+    filtered_performance = filtered_performance[
+        filtered_performance["period"].isin(PERIOD_ORDER)
+    ]
 
 
-# ------------------------------------------------------------
-# Determine which period to display
-# ------------------------------------------------------------
+# ------------------------------ Overview ------------------------------
 
-if selected_period == "All":
+st.header("1. At a glance")
 
-    cold_period = "recent"
+def count_health(label):
+    if "health_status" not in filtered_health:
+        return 0
+    return int(filtered_health["health_status"].astype(str).str.lower().eq(label).sum())
 
+degraded_count = count_health("degraded")
+warning_count = count_health("warning")
+healthy_count = count_health("healthy")
+
+if filtered_health.empty:
+    overall = "No matching data"
+    overall_icon = "⚪"
+elif degraded_count:
+    overall, overall_icon = "Needs attention", "🔴"
+elif warning_count:
+    overall, overall_icon = "Keep an eye on it", "🟡"
 else:
+    overall, overall_icon = "Healthy", "🟢"
 
-    cold_period = selected_period
-
-
-cold_relationship = relationship_df.copy()
-
-
-# ------------------------------------------------------------
-# Filter by selected period
-# ------------------------------------------------------------
-
-if "period" in cold_relationship.columns:
-
-    cold_relationship = cold_relationship[
-        cold_relationship["period"] == cold_period
-    ]
-
-
-# ------------------------------------------------------------
-# Filter by selected task
-# ------------------------------------------------------------
-
-if (
-    selected_task != "All"
-    and "task" in cold_relationship.columns
-):
-
-    cold_relationship = cold_relationship[
-        cold_relationship["task"] == selected_task
-    ]
-
-
-# ------------------------------------------------------------
-# Filter by selected model
-# ------------------------------------------------------------
-
-if (
-    selected_model != "All"
-    and "model" in cold_relationship.columns
-):
-
-    cold_relationship = cold_relationship[
-        cold_relationship["model"] == selected_model
-    ]
-
-
-if not cold_relationship.empty:
-
-    cold_values = cold_relationship.iloc[0]
-
-    cold_users = float(
-        cold_values["cold_user_rate_pct"]
-    )
-
-    new_items = float(
-        cold_values["new_item_rate_pct"]
-    )
-
-    displayed_cold_period = {
-        "baseline_holdout": "Baseline",
-        "comparison": "Comparison",
-        "recent": "Recent",
-    }.get(
-        cold_period,
-        cold_period.title(),
-    )
-
-
-    st.caption(
-        f"Cold-start indicators for the "
-        f"{displayed_cold_period} evaluation period "
-        f"under the current filters."
-    )
-
-
-    cold1, cold2 = st.columns(2)
-
-
-    with cold1:
-
-        st.metric(
-            "Cold Users",
-            f"{cold_users:.2f}%",
+c1, c2, c3, c4 = st.columns(4)
+for col, label, value in [
+    (c1, "Overall status", f"{overall_icon} {overall}"),
+    (c2, "Healthy checks", f"🟢 {healthy_count}"),
+    (c3, "Checks to watch", f"🟡 {warning_count}"),
+    (c4, "Checks with a drop", f"🔴 {degraded_count}"),
+]:
+    with col:
+        st.markdown(
+            f'<div class="plain-card"><div class="card-label">{label}</div>'
+            f'<div class="card-value">{value}</div></div>',
+            unsafe_allow_html=True,
         )
-
-        if cold_users >= 90:
-
-            st.caption(
-                "🔴 Very high cold-user pressure"
-            )
-
-        elif cold_users >= 70:
-
-            st.caption(
-                "🟡 High cold-user pressure"
-            )
-
-        elif cold_users >= 40:
-
-            st.caption(
-                "🟡 Moderate cold-user pressure"
-            )
-
-        else:
-
-            st.caption(
-                "🟢 Lower cold-user pressure"
-            )
-
-        st.caption(
-            "Users without sufficient historical interaction "
-            "history for the monitored period."
-        )
-
-
-    with cold2:
-
-        st.metric(
-            "New Items",
-            f"{new_items:.2f}%",
-        )
-
-        if new_items >= 70:
-
-            st.caption(
-                "🔴 Very high new-item pressure"
-            )
-
-        elif new_items >= 40:
-
-            st.caption(
-                "🟡 High new-item pressure"
-            )
-
-        elif new_items >= 20:
-
-            st.caption(
-                "🟡 Moderate new-item pressure"
-            )
-
-        else:
-
-            st.caption(
-                "🟢 Lower new-item pressure"
-            )
-
-        st.caption(
-            "Items not represented in the relevant "
-            "training history."
-        )
-
-
-else:
-
-    st.info(
-        "No cold-start information matches "
-        "the current filters."
-    )
-
-
-# ============================================================
-# HEALTH DETAILS
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">'
-    'Monitoring Details'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-details_columns = [
-    "period",
-    "task",
-    "model",
-    "ndcg_relative_change_pct",
-    "recall_relative_change_pct",
-    "health_status",
-]
-
-
-details = filtered_health[
-    details_columns
-].copy()
-
-
-details = details.rename(
-    columns={
-        "period": "Period",
-        "task": "Task",
-        "model": "Model",
-        "ndcg_relative_change_pct":
-            "NDCG Change (%)",
-        "recall_relative_change_pct":
-            "Recall Change (%)",
-        "health_status":
-            "Health",
-    }
-)
-
-
-details["NDCG Change (%)"] = (
-    details["NDCG Change (%)"]
-    .round(2)
-)
-
-
-details["Recall Change (%)"] = (
-    details["Recall Change (%)"]
-    .round(2)
-)
-
-
-st.dataframe(
-    details,
-    width="stretch",
-    hide_index=True,
-)
-
-
-# ============================================================
-# INTERPRETATION
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">'
-    'Monitoring Interpretation'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-st.info(
-    "The monitoring results show temporal changes in data "
-    "distribution, cold-start pressure, and recommendation "
-    "performance. These measurements identify conditions "
-    "requiring investigation; they do not establish that "
-    "data drift caused model degradation."
-)
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.divider()
 
 st.caption(
-    "Recommendation Drift Monitoring System • "
-    "Retailrocket evaluation dataset • "
-    "20% relative performance degradation threshold"
+    "These counts refer to the rows visible under your chosen filters—not necessarily the number "
+    "of unique models in production."
+)
+
+
+# ------------------------------ Performance ------------------------------
+
+st.header("2. Are recommendations still useful?")
+st.write(
+    "**NDCG@10** checks whether useful products appear near the top of the list. "
+    "**Recall@10** checks how many of the relevant products appear in the top 10."
+)
+
+if filtered_performance.empty:
+    st.info("No recommendation results match these filters. Try selecting “All methods”, “All tasks”, or “All periods”.")
+else:
+    perf = filtered_performance.copy()
+    if "period" not in perf.columns or not {"ndcg_at_k", "recall_at_k"}.issubset(perf.columns):
+        st.warning("The recommendation results file does not contain the expected period/NDCG/Recall columns.")
+    else:
+        if selected_period:
+            chosen_period = selected_period
+        else:
+            existing_periods = [p for p in PERIOD_ORDER if p in set(perf["period"].astype(str))]
+            chosen_period = existing_periods[-1] if existing_periods else None
+
+        current = perf[perf["period"].astype(str) == chosen_period] if chosen_period else perf.iloc[0:0]
+
+        # When “All” is selected, avoid implying a single row is the system-wide score.
+        if selected_model == "All methods" or selected_task == "All tasks":
+            st.info(
+                "You have selected more than one configuration. The score below is the average of "
+                "the matching rows. Choose one method and one task in the sidebar for a direct comparison."
+            )
+
+        if not current.empty:
+            ndcg_value = pd.to_numeric(current["ndcg_at_k"], errors="coerce").mean()
+            recall_value = pd.to_numeric(current["recall_at_k"], errors="coerce").mean()
+            chosen_label = PERIOD_LABELS.get(chosen_period, str(chosen_period).title())
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(f"NDCG@10 · {chosen_label}", f"{ndcg_value:.4f}" if pd.notna(ndcg_value) else "—")
+            m2.metric(f"Recall@10 · {chosen_label}", f"{recall_value:.4f}" if pd.notna(recall_value) else "—")
+            m3.metric("Performance alert threshold", "20% drop")
+            st.caption(
+                "The scores are shown on a 0–1 scale. Higher is generally better. "
+                "The 20% threshold is the project’s monitoring rule, not a universal industry standard."
+            )
+        else:
+            st.info("There are no results for this period and filter combination.")
+
+        # Table of values used in the chart, with clear labels.
+        chart_data = perf.copy()
+        chart_data["period"] = chart_data["period"].astype(str)
+        chart_data["period_order"] = chart_data["period"].map({p: i for i, p in enumerate(PERIOD_ORDER)})
+        chart_data = chart_data.sort_values("period_order")
+        chart_data["configuration"] = (
+            chart_data.get("model", pd.Series("Model", index=chart_data.index)).astype(str)
+            + " · "
+            + chart_data.get("task", pd.Series("Task", index=chart_data.index)).astype(str)
+        )
+        chart_data["time_label"] = chart_data["period"].map(PERIOD_LABELS).fillna(chart_data["period"])
+        chart_data["ndcg_at_k"] = pd.to_numeric(chart_data["ndcg_at_k"], errors="coerce")
+        chart_data["recall_at_k"] = pd.to_numeric(chart_data["recall_at_k"], errors="coerce")
+
+        if selected_model != "All methods" and selected_task != "All tasks":
+            chart_data = chart_data[chart_data["configuration"] == f"{selected_model} · {selected_task}"]
+
+        if selected_period:
+            chart_data = chart_data[chart_data["period"] == selected_period]
+
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Recommendation placement")
+            st.caption("NDCG@10 · higher is better")
+            ndcg_plot = chart_data.pivot_table(
+                index="time_label", columns="configuration", values="ndcg_at_k", aggfunc="mean"
+            )
+            order_labels = [PERIOD_LABELS[p] for p in PERIOD_ORDER if p in set(chart_data["period"])]
+            ndcg_plot = ndcg_plot.reindex(order_labels)
+            if not ndcg_plot.empty:
+                st.line_chart(ndcg_plot)
+            else:
+                st.caption("Not enough data to draw this chart.")
+
+        with right:
+            st.subheader("Relevant products found")
+            st.caption("Recall@10 · higher is better")
+            recall_plot = chart_data.pivot_table(
+                index="time_label", columns="configuration", values="recall_at_k", aggfunc="mean"
+            )
+            order_labels = [PERIOD_LABELS[p] for p in PERIOD_ORDER if p in set(chart_data["period"])]
+            recall_plot = recall_plot.reindex(order_labels)
+            if not recall_plot.empty:
+                st.line_chart(recall_plot)
+            else:
+                st.caption("Not enough data to draw this chart.")
+
+        with st.expander("See the exact performance values"):
+            display = chart_data.copy()
+            display["period"] = display["period"].map(PERIOD_LABELS).fillna(display["period"])
+            columns = [c for c in ["period", "model", "task", "k", "ndcg_at_k", "recall_at_k"] if c in display]
+            st.dataframe(display[columns].rename(columns={
+                "period": "Time period", "model": "Method", "task": "Task",
+                "k": "Top products checked", "ndcg_at_k": "NDCG@10", "recall_at_k": "Recall@10",
+            }), use_container_width=True, hide_index=True)
+
+
+# ------------------------------ Alerts ------------------------------
+
+st.header("3. Things that may need attention")
+
+if filtered_health.empty:
+    st.info("No health-monitoring rows match the current filters.")
+else:
+    alert_rows = filtered_health.copy()
+    alert_rows["health_status"] = alert_rows["health_status"].astype(str).str.lower()
+    bad = alert_rows[alert_rows["health_status"] == "degraded"]
+    warning = alert_rows[alert_rows["health_status"] == "warning"]
+
+    if bad.empty and warning.empty:
+        st.success("No warning or degraded checks appear under the current filters.")
+    else:
+        if not bad.empty:
+            st.error("A performance drop was detected in these checks:")
+            st.dataframe(
+                bad[[c for c in ["period", "task", "model", "ndcg_relative_change_pct",
+                                  "recall_relative_change_pct", "health_status"] if c in bad.columns]]
+                .rename(columns={
+                    "period": "Time period", "task": "Task", "model": "Method",
+                    "ndcg_relative_change_pct": "NDCG change (%)",
+                    "recall_relative_change_pct": "Recall change (%)",
+                    "health_status": "Status",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+        if not warning.empty:
+            st.warning("Some checks are approaching or meeting the warning condition.")
+            st.dataframe(
+                warning[[c for c in ["period", "task", "model", "ndcg_relative_change_pct",
+                                      "recall_relative_change_pct", "health_status"] if c in warning.columns]]
+                .rename(columns={
+                    "period": "Time period", "task": "Task", "model": "Method",
+                    "ndcg_relative_change_pct": "NDCG change (%)",
+                    "recall_relative_change_pct": "Recall change (%)",
+                    "health_status": "Status",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+st.caption(
+    "A negative percentage means the score fell compared with the reference period. "
+    "A positive percentage means it rose. These are associations over time, not proof of cause."
+)
+
+
+# ------------------------------ Adaptation / lifecycle ------------------------------
+
+st.header("4. What happened after retraining?")
+st.write(
+    "When a model’s performance is marked as degraded, the system can recommend retraining. "
+    "The retrained model is then checked against the original model using the same recent test targets."
+)
+
+if filtered_adaptation.empty:
+    st.info("No adaptation decisions match the current filters. Check that Phase 5A has been run and the CSV is up to date.")
+else:
+    lifecycle = filtered_adaptation.copy()
+
+    def readable(value, mapping=None):
+        if pd.isna(value) or str(value).strip() in ("", "<NA>", "nan", "None"):
+            return "Not available"
+        text_value = str(value).strip()
+        return mapping.get(text_value, text_value.replace("_", " ").title()) if mapping else text_value.replace("_", " ").title()
+
+    for _, row in lifecycle.iterrows():
+        model = readable(row.get("model")).upper()
+        task = readable(row.get("task"))
+        period = readable(row.get("period"), PERIOD_LABELS)
+        decision_raw = str(row.get("lifecycle_decision", ""))
+        decision = readable(row.get("lifecycle_decision"), LIFECYCLE_LABELS)
+        health = readable(row.get("health_status"), HEALTH_LABELS)
+        action = readable(row.get("recommended_action"), ACTION_LABELS)
+        adaptation_status = readable(row.get("adaptation_status"))
+        validation = readable(row.get("validation_decision"))
+        ndcg_change = pd.to_numeric(pd.Series([row.get("ndcg_relative_change_pct")]), errors="coerce").iloc[0]
+        recall_change = pd.to_numeric(pd.Series([row.get("recall_relative_change_pct")]), errors="coerce").iloc[0]
+
+        icon = {
+            "ACCEPT": "🟢", "KEEP_CURRENT_MODEL": "🟢",
+            "REVIEW": "🟡", "REJECT": "🔴", "RETRAIN_PENDING": "🟠",
+        }.get(decision_raw, "⚪")
+
+        with st.container(border=True):
+            st.subheader(f"{model} · {task} · {period}")
+            st.markdown(f"### {icon} {decision}")
+            a, b, c = st.columns(3)
+            a.metric("NDCG change after adaptation", f"{ndcg_change:+.2f}%" if pd.notna(ndcg_change) else "—")
+            b.metric("Recall change after adaptation", f"{recall_change:+.2f}%" if pd.notna(recall_change) else "—")
+            c.metric("Model health before decision", health)
+            st.write(f"**Suggested next step:** {action}")
+            st.write(f"**Adaptation result:** {adaptation_status}")
+            st.write(f"**Validation:** {validation}")
+            if decision_raw == "ACCEPT":
+                st.success("The adapted model passed the project’s current validation rule. This is not automatic deployment.")
+            elif decision_raw == "REVIEW":
+                st.warning("The measures disagree or show a mixed result, so a person should review it.")
+            elif decision_raw == "REJECT":
+                st.error("The adapted model did not meet the project’s recovery rule.")
+            elif decision_raw == "KEEP_CURRENT_MODEL":
+                st.info("The monitoring rule did not call for retraining for this row.")
+
+    st.caption(
+        "ACCEPT means the configured checks passed; it does not mean the model has been deployed. "
+        "REVIEW means a human should inspect the results before deciding what to do."
+    )
+
+    with st.expander("Show all lifecycle decision details"):
+        columns = [
+            "period", "task", "model", "health_status", "recommended_action",
+            "adaptation_status", "validation_decision", "lifecycle_decision",
+            "decision_explanation",
+        ]
+        columns = [c for c in columns if c in lifecycle.columns]
+        st.dataframe(lifecycle[columns].rename(columns={
+            "period": "Time period", "task": "Task", "model": "Method",
+            "health_status": "Health", "recommended_action": "Suggested action",
+            "adaptation_status": "Adaptation result", "validation_decision": "Validation",
+            "lifecycle_decision": "Lifecycle decision", "decision_explanation": "Why this decision?",
+        }), use_container_width=True, hide_index=True)
+
+
+# ------------------------------ Cold start / changing data ------------------------------
+
+st.header("5. Are there many new users or products?")
+st.write(
+    "A recommendation system has less history to learn from when a visitor is new or a product has "
+    "not appeared in its training data. This is commonly called the **cold-start problem**."
+)
+
+recent_relationship = relationship_df.copy()
+if "period" in recent_relationship.columns:
+    recent_relationship = recent_relationship[recent_relationship["period"].astype(str) == "recent"]
+
+if recent_relationship.empty:
+    st.info("No latest-period cold-start summary is available.")
+else:
+    row = recent_relationship.iloc[0]
+    cold_users = pd.to_numeric(pd.Series([row.get("cold_user_rate_pct")]), errors="coerce").iloc[0]
+    new_items = pd.to_numeric(pd.Series([row.get("new_item_rate_pct")]), errors="coerce").iloc[0]
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Visitors with little/no history", f"{cold_users:.2f}%" if pd.notna(cold_users) else "—")
+        st.caption("A higher percentage means the system has less past activity to personalize recommendations for.")
+    with c2:
+        st.metric("Products not seen in training", f"{new_items:.2f}%" if pd.notna(new_items) else "—")
+        st.caption("A higher percentage means more products have little or no training history.")
+
+
+# ------------------------------ Data transparency ------------------------------
+
+st.header("6. Monitoring details")
+with st.expander("View the health-monitoring data"):
+    detail_cols = [
+        c for c in ["period", "task", "model", "ndcg_relative_change_pct",
+                    "recall_relative_change_pct", "health_status"]
+        if c in filtered_health.columns
+    ]
+    details = filtered_health[detail_cols].copy()
+    details = details.rename(columns={
+        "period": "Time period", "task": "Task", "model": "Method",
+        "ndcg_relative_change_pct": "NDCG change (%)",
+        "recall_relative_change_pct": "Recall change (%)",
+        "health_status": "Health status",
+    })
+    st.dataframe(details, use_container_width=True, hide_index=True)
+
+with st.expander("How to read the terms"):
+    st.markdown(
+        """
+        - **NDCG@10:** gives more credit when relevant products appear near the top of the first 10 recommendations.
+        - **Recall@10:** the share of relevant products found in the first 10 recommendations.
+        - **Data drift:** the data distribution changes over time.
+        - **Cold start:** the system has too little history about a visitor or product.
+        - **Retraining/adaptation:** teaching the model again with newer historical data.
+        - **ACCEPT / REVIEW / REJECT:** the result of the project's validation rule, not a guarantee of business success.
+        """
+    )
+
+st.divider()
+st.caption(
+    "Recommendation Drift Monitoring System · Retailrocket evaluation dataset · "
+    "Project monitoring threshold: 20% relative performance drop"
 )
